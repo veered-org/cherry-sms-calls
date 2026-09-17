@@ -1,0 +1,16 @@
+[Unit]
+Description=Publish baresip call state for the COSMIC phone tools
+# Tails baresip's ctrl_tcp event stream and writes
+# $XDG_RUNTIME_DIR/cosmic-phone.state. Without it the panel button and the
+# dialer cannot tell that a call started or ended.
+After=cosmic-phone-baresip.service
+BindsTo=cosmic-phone-baresip.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cosmic-phoned
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=cosmic-phone-baresip.service

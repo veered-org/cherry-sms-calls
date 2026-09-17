@@ -1,0 +1,11 @@
+# Drop-in for pipewire.service: ~/.config/systemd/user/pipewire.service.d/cosmic-phone-aec.conf
+# Installed only by `install.sh --with-aec`.
+#
+# Loads the locally built AEC3 echo-cancel plugin (aec/build-aec.sh) in place
+# of the distro one. SPA_PLUGIN_DIR is a colon list and the first match wins,
+# so ONLY aec/libspa-aec-webrtc is shadowed; every other plugin still loads
+# from the system directory, and package updates never touch the local copy.
+#
+# @SPA_SYSTEM_DIR@ is replaced by the installer, e.g. /usr/lib/x86_64-linux-gnu/spa-0.2
+[Service]
+Environment=SPA_PLUGIN_DIR=%h/.local/lib/spa-0.2:@SPA_SYSTEM_DIR@

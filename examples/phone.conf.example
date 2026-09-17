@@ -1,0 +1,79 @@
+# ~/.config/cosmic-tools/phone.conf - settings for the COSMIC phone tools.
+# Not secret. API credentials go in phone.secrets (chmod 600).
+# Every key is optional; the values shown are the defaults unless noted.
+
+[phone]
+# voipms, twilio, signalwire, kdeconnect (texts from your own phone) or
+# command (run your own program). See README "Which providers work".
+backend = voipms
+# REQUIRED for voipms: your voip.ms DID, 10 digits for NANP. Several may be
+# listed comma-separated; the FIRST is used to send SMS, all of them are used
+# to tell inbound calls from outbound ones.
+did =
+# Shown in the SMS window title, e.g. "Office line". Defaults to the DID.
+did_label =
+sms_days = 30
+recent_calls = 3
+# twilio/signalwire: country code added to numbers typed without +
+country_code = 1
+
+[voipms]
+api_url = https://voip.ms/api/v1/rest.php
+# GET is the documented form. POST keeps credentials out of any URL-logging
+# proxy between you and voip.ms; see README "Open questions".
+http_method = GET
+# voip.ms numeric timezone for returned timestamps. -1 has been observed to
+# return UTC; timezone_is_utc = true then converts to this machine's local time.
+timezone = -1
+timezone_is_utc = true
+timeout = 30
+# Must NOT be the Python default: voip.ms answers 403 to "Python-urllib/x.y".
+user_agent = cosmic-tools-phone/0.1 (+https://github.com/veered-org/redshift-cosmic-tools)
+
+[twilio]
+api_url = https://api.twilio.com
+
+[signalwire]
+# the NAME in NAME.signalwire.com (required for backend = signalwire)
+space =
+
+[kdeconnect]
+cli = kdeconnect-cli
+# needed only when several devices are paired (see: kdeconnect-cli -a)
+device =
+
+[command]
+# Used when backend = command. See examples/command-backend.sh.
+command =
+
+[baresip]
+config_dir = ~/.baresip
+ctrl_host = 127.0.0.1
+ctrl_port = 4444
+
+[aec]
+# true only after following aec/BUILD.md (install.sh --with-aec sets this)
+enabled = false
+sink = cosmic_aec_sink
+source = cosmic_aec_source
+
+[audio]
+# Pause media players and mute other apps while a call is connected.
+# Off by default; see the notes in bin/cosmic-audio-duck.
+duck_during_calls = false
+
+[recording]
+# Empty = off. Must match snd_path in ~/.baresip/config when enabled.
+# Call recording is regulated; check consent requirements first.
+dir =
+
+[contacts]
+# Sources for cosmic-contacts-build (comma-separated lists allowed).
+vcf =
+csv =
+book = ~/.local/share/cosmic-tools/phone/contacts.json
+
+[panel]
+# Other pidfile-toggled panel windows to close when a phone window opens,
+# e.g. names of your own layer-shell tools (comma-separated).
+solo_family =

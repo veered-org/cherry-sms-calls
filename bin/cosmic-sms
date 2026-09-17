@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""cosmic-sms - a deliberately small SMS window for a VoIP DID.
+
+Send texts and read the last N days of them. Nothing else. The data comes from
+the configured backend (voip.ms, Twilio, SignalWire, KDE Connect or your own
+command; see phone.conf).
+
+Exits: Esc / Ctrl-W, the Close button, or launching it again (toggle).
+"""
+import os
+import sys
+import threading
+from html import escape
+
+
+def _libpath():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.environ.get("COSMIC_PHONE_LIB"), os.path.join(here, "..", "lib"),
+              os.path.expanduser("~/.local/lib/cosmic-tools/phone")):
+        if p and os.path.isdir(os.path.join(p, "cosmic_phone")):
+            return p
+    return ""
+
+
+sys.path.insert(0, _libpath())
+
+import gi  # noqa: E402
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, GLib, Pango  # noqa: E402
+
+from cosmic_phone import backend, cache, config, contacts, ui  # noqa: E402
+
+NAME = "cosmic-sms"
+CACHE_NAME = "sms.json"
+
+
+class SmsWindow(Gtk.Window):
+    def __init__(self, cfg):
+        self.cfg = cfg
+        dids = config.dids(cfg)
+        label = cfg.get("phone", "did_label") or (dids[0] if dids else "")
+        super().__init__(title="SMS" + (" - " + label if label else ""))
+        self.days = cfg.getint("phone", "sms_days")
+        self.backend = None
+        self.backend_error = None
+        try:
+            self.backend = backend.get(cfg)
+        except Exception as e:           # show it in the window, don't crash
+            self.backend_error = str(e)
+
+        w, h = ui.target_geometry()
+        self.set_default_size(w, h)
+        self.set_size_request(w, h)
+        ui.anchor_right(self)
+        ui.apply_style(self)
+        self.set_border_width(8)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.add(box)
+
+        self.to = Gtk.Entry(placeholder_text="To (number)")
+        self.to.set_max_length(20)
+        box.pack_start(self.to, False, False, 0)
+
+        self.body = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD)
+        self.body.set_size_request(-1, 90)
+        self.body.get_buffer().connect("changed", self.on_body_changed)
+        frame = Gtk.Frame()
+        frame.add(self.body)
+        box.pack_start(frame, False, False, 0)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.send_btn = Gtk.Button(label="Send")
+        self.send_btn.get_style_context().add_class("suggested-action")
+        self.send_btn.connect("clicked", self.on_send)
+        row.pack_start(self.send_btn, False, False, 0)
+        refresh = Gtk.Button(label="Refresh")
+        refresh.connect("clicked", lambda *_: self.load())
+        row.pack_start(refresh, False, False, 0)
+        close = Gtk.Button(label="Close")
+        close.set_tooltip_text("Close (Esc)")
+        close.connect("clicked", lambda *_: self.destroy())
+        row.pack_start(close, False, False, 0)
+        self.status = Gtk.Label(xalign=0)
+        self.status.set_ellipsize(Pango.EllipsizeMode.END)
+        row.pack_start(self.status, True, True, 0)
+        box.pack_start(row, False, False, 0)
+
+        box.pack_start(Gtk.Separator(), False, False, 4)
+
+        self.store = Gtk.ListStore(str, str)      # markup, contact number
+        view = Gtk.TreeView(model=self.store)
+        view.set_headers_visible(False)
+        r = Gtk.CellRendererText()
+        r.set_property("wrap-mode", Pango.WrapMode.WORD_CHAR)
+        r.set_property("wrap-width", max(160, w - 60))
+        view.append_column(Gtk.TreeViewColumn("", r, markup=0))
+        view.connect("row-activated", self.on_row)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(view)
+        box.pack_start(scroll, True, True, 0)
+
+        self.connect("key-press-event", self.on_keypress)
+        self.connect("destroy", Gtk.main_quit)
+
+        self.have_rows = False
+        cached = cache.read(CACHE_NAME)
+        if cached:
+            self.render(cached)          # on screen before the refresh returns
+        self.load()
+
+    def on_keypress(self, _w, ev):
+        if ui.is_close_key(ev):
+            self.destroy()
+            return True
+        return False
+
+    def say(self, text):
+        def apply():
+            self.status.set_text(text)
+            self.status.set_tooltip_text(text if len(text) > 40 else None)
+            return False
+        GLib.idle_add(apply)
+
+    def on_body_changed(self, buf):
+        n = buf.get_char_count()
+        limit = getattr(self.backend, "max_len", None)
+        if limit and n > limit - 20:
+            self.status.set_text("%d/%d" % (n, limit))
+
+    def on_row(self, view, path, col):
+        """Activate (double-click) a message to reply to that number."""
+        self.to.set_text(self.store[path][1])
+        self.body.grab_focus()
+
+    def render(self, msgs):
+        self.store.clear()
+        for m in msgs:
+            incoming = m.get("dir") == "in"
+            num = m.get("contact", "") or ""
+            name = contacts.label(num) if contacts.lookup(num) else ""
+            who = escape(name + "  " + num if name else num)
+            when = escape((m.get("date", "") or "")[5:16])      # MM-DD HH:MM
+            arrow = "←" if incoming else "→"
+            colour = "#7fb3ff" if incoming else "#9bd39b"
+            markup = ("<span foreground='%s'><b>%s %s</b></span>"
+                      "  <span size='small' foreground='#999'>%s</span>\n%s"
+                      % (colour, arrow, who, when, escape(m.get("message", "") or "")))
+            self.store.append([markup, num])
+        self.have_rows = bool(msgs)
+        self.status.set_text("%d msg / %dd" % (len(msgs), self.days))
+        return False
+
+    def load(self):
+        if self.backend is None:
+            self.say("Setup: %s" % self.backend_error)
+            return
+        if not self.have_rows:
+            self.say("Loading...")
+        threading.Thread(target=self._load, daemon=True).start()
+
+    def _load(self):
+        try:
+            msgs = self.backend.sms_list(self.days)
+        except Exception as e:
+            cache.log_error("sms", "list: %s" % e)
+            self.say(("Offline, showing cached - %s" % e) if self.have_rows
+                     else "Could not load: %s" % e)
+            return
+        cache.write(CACHE_NAME, msgs)
+        GLib.idle_add(self.render, msgs)
+
+    def on_send(self, *_):
+        if self.backend is None:
+            self.say("Setup: %s" % self.backend_error)
+            return
+        # Keep a leading + for international numbers; each backend normalises.
+        raw = self.to.get_text().strip()
+        to = ("+" + backend.digits(raw)) if raw.startswith("+") else backend.nanp10(raw)
+        buf = self.body.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True).strip()
+        if len(backend.digits(to)) < 7:
+            self.say("Enter a full number.")
+            return
+        if not text:
+            self.say("Nothing to send.")
+            return
+        self.send_btn.set_sensitive(False)
+        self.say("Sending to %s..." % to)
+
+        def work():
+            try:
+                self.backend.sms_send(to, text)
+                self.say("Sent.")
+                GLib.idle_add(buf.set_text, "")
+                GLib.idle_add(self.load)
+            except Exception as e:
+                # Do NOT retry a send automatically: a timeout may still have
+                # delivered it, and a duplicate text is worse than an error.
+                cache.log_error("sms", "send to %s: %s" % (to, e))
+                self.say("Failed: %s" % e)
+            finally:
+                GLib.idle_add(self.send_btn.set_sensitive, True)
+        threading.Thread(target=work, daemon=True).start()
+
+
+def main():
+    cfg = config.load()
+    ui.toggle_instance(NAME)
+    extra = [s.strip() for s in cfg.get("panel", "solo_family").split(",") if s.strip()]
+    ui.close_others(NAME, extra)
+    SmsWindow(cfg).show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

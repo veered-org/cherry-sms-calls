@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""cosmic-audio-duck - quiet everything else for the duration of a call.
+
+    cosmic-audio-duck mute      # pause MPRIS players, mute other streams
+    cosmic-audio-duck restore   # put back exactly what we changed
+
+OFF BY DEFAULT. cosmic-phoned only calls `mute` when phone.conf sets
+[audio] duck_during_calls = true; it calls `restore` on every call end and at
+startup regardless, which is a no-op when nothing was ducked.
+
+Why off by default: muting is stateful. If a stream is renumbered, its
+identity drifts, or a call-end event is missed, a mute can outlive its record,
+and an orphaned mute is indistinguishable from one you made deliberately. The
+code below defends against the known cases (saves state before touching
+anything, restores by index AND by stable identity), but a desktop left silent
+is a worse failure than music playing over a call.
+
+Needs: pactl (pulseaudio-utils) and optionally playerctl.
+"""
+import json
+import os
+import subprocess
+import sys
+
+STATE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "cosmic-audio-duck.json")
+
+# Our own call audio must never be muted. The echo canceller's forwarding
+# stream carries no application.name at all, only node/media names, which is
+# why identities join several properties.
+OURS = ("baresip", "cosmic-dial", "cosmic-sms", "cosmic_aec", "cosmic-aec", "echo-cancel")
+
+
+def run(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(cmd, 127, "", "")
+
+
+def sink_inputs():
+    """[(index, identity, stable_id, muted)].
+
+    identity joins application.name + node.name + media.name (to recognise
+    our own audio). stable_id EXCLUDES media.name, which changes while a stream
+    lives (a browser reports the page title, later "Playback"), and adds
+    module-stream-restore.id, the most stable key available."""
+    STABLE = ("application.name", "node.name", "module-stream-restore.id")
+    out = run("pactl", "list", "sink-inputs").stdout
+    items, idx, names, stable, muted = [], None, [], [], False
+
+    def flush():
+        if idx is not None:
+            items.append((idx, " ".join(names), " ".join(stable), muted))
+
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("Sink Input #"):
+            flush()
+            idx, names, stable, muted = s.split("#", 1)[1].strip(), [], [], False
+        elif s.startswith("Mute:"):
+            muted = s.split(":", 1)[1].strip() == "yes"
+        elif "=" in s:
+            key, val = s.split("=", 1)
+            key, val = key.strip(), val.strip().strip('"')
+            if key in ("application.name", "node.name", "media.name"):
+                names.append(val)
+            if key in STABLE:
+                stable.append(val)
+    flush()
+    return items
+
+
+def players():
+    r = run("playerctl", "-l")
+    if r.returncode != 0:
+        return []
+    return [n for n in r.stdout.split()
+            if run("playerctl", "-p", n, "status").stdout.strip() == "Playing"]
+
+
+def mute():
+    if os.path.exists(STATE):
+        return                       # already ducked; never stack saved state
+    playing = players()
+    muting = [(i, st) for i, ident, st, m in sink_inputs()
+              if not m and not any(o in (ident or "").lower() for o in OURS)]
+    # Save BEFORE changing anything, so an interrupted call can still restore.
+    with open(STATE, "w") as f:
+        json.dump({"paused": playing, "muted": [i for i, _ in muting],
+                   "muted_ids": [st for _, st in muting]}, f)
+    for name in playing:
+        run("playerctl", "-p", name, "pause")
+    for idx, _ in muting:
+        run("pactl", "set-sink-input-mute", idx, "1")
+
+
+def restore():
+    try:
+        with open(STATE) as f:
+            saved = json.load(f)
+    except Exception:
+        return                       # nothing was ducked
+    for idx in saved.get("muted", []):
+        run("pactl", "set-sink-input-mute", idx, "0")
+    # Second pass by identity for streams renumbered since. Only unmutes
+    # identities we recorded muting ourselves.
+    ids = {i for i in saved.get("muted_ids", []) if i}
+    if ids:
+        for idx, _ident, stable, muted in sink_inputs():
+            if muted and stable in ids:
+                run("pactl", "set-sink-input-mute", idx, "0")
+    for name in saved.get("paused", []):
+        run("playerctl", "-p", name, "play")
+    try:
+        os.unlink(STATE)
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    verb = sys.argv[1] if len(sys.argv) > 1 else ""
+    if verb == "mute":
+        mute()
+    elif verb == "restore":
+        restore()
+    else:
+        sys.exit("usage: cosmic-audio-duck <mute|restore>")

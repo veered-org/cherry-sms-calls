@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""cosmic-dial - type a number, press Call. Nothing else.
+
+A narrow strip anchored to the right of the monitor under the pointer, with the
+last few calls on top. Placing and answering calls is baresip's job (through
+cosmic-phone-ctl); the live call state comes from cosmic-phoned's state file.
+
+Exits: Esc / Ctrl-W, the Close button, or launching it again (toggle).
+"""
+import datetime
+import os
+import subprocess
+import sys
+import threading
+
+
+def _libpath():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.environ.get("COSMIC_PHONE_LIB"), os.path.join(here, "..", "lib"),
+              os.path.expanduser("~/.local/lib/cosmic-tools/phone")):
+        if p and os.path.isdir(os.path.join(p, "cosmic_phone")):
+            return p
+    return ""
+
+
+sys.path.insert(0, _libpath())
+
+import gi  # noqa: E402
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, GLib, Pango  # noqa: E402
+
+from cosmic_phone import backend, baresip, cache, config, ui  # noqa: E402
+try:
+    from cosmic_phone import contacts
+except Exception:                     # a lookup problem must never block the phone
+    contacts = None
+
+NAME = "cosmic-dial"
+CACHE_NAME = "recent-calls.json"
+HERE = os.path.dirname(os.path.realpath(__file__))
+CTL = os.path.join(HERE, "cosmic-phone-ctl")
+
+
+def digits(s):
+    return "".join(c for c in s if c.isdigit())
+
+
+def pretty_number(n):
+    d = digits(n)
+    if len(d) == 11 and d.startswith("1"):
+        d = d[1:]
+    if len(d) == 10:
+        return "(%s) %s-%s" % (d[:3], d[3:6], d[6:])
+    return n or "unknown"
+
+
+def pretty_when(s):
+    """Clock for today, weekday for the past week, a date before that."""
+    try:
+        t = datetime.datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return s or ""
+    delta = (datetime.date.today() - t.date()).days
+    clock = t.strftime("%-I:%M %p").replace("AM", "am").replace("PM", "pm")
+    if delta == 0:
+        return clock
+    if delta == 1:
+        return "Yesterday " + clock
+    if delta < 7:
+        return t.strftime("%a ") + clock
+    return t.strftime("%b %-d ") + clock
+
+
+def pretty_duration(secs):
+    return "%d:%02d" % (secs // 60, secs % 60) if secs else ""
+
+
+class Dialer(Gtk.Window):
+    def __init__(self, cfg):
+        super().__init__(title="Dial")
+        self.cfg = cfg
+        self.recent_n = cfg.getint("phone", "recent_calls")
+        try:
+            self.backend = backend.get(cfg)
+        except Exception:
+            self.backend = None          # dialing still works without history
+
+        w, h = ui.target_geometry()
+        self.set_default_size(w, h)
+        self.set_size_request(w, h)
+        ui.anchor_right(self)
+        ui.apply_style(self)
+        self.set_border_width(8)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.add(box)
+
+        # Recent calls: two columns so the time stays pinned to the right edge
+        # while a long name ellipsizes. Store: who markup, when markup, number.
+        self.recent_store = Gtk.ListStore(str, str, str)
+        view = Gtk.TreeView(model=self.recent_store, headers_visible=False)
+        who = Gtk.CellRendererText(ellipsize=Pango.EllipsizeMode.END)
+        col = Gtk.TreeViewColumn("", who, markup=0)
+        col.set_expand(True)
+        view.append_column(col)
+        view.append_column(Gtk.TreeViewColumn("", Gtk.CellRendererText(xalign=1.0), markup=1))
+        view.set_activate_on_single_click(True)
+        view.connect("row-activated", self.on_recent_activated)
+        view.set_tooltip_text("Click a call to put the number in the box below")
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_min_content_height(74)
+        scroller.set_max_content_height(74)
+        scroller.add(view)
+        box.pack_start(scroller, False, False, 0)
+
+        self.entry = Gtk.Entry(placeholder_text="Number")
+        self.entry.set_input_purpose(Gtk.InputPurpose.PHONE)
+        self.entry.connect("activate", self.on_call)
+        box.pack_start(self.entry, False, False, 0)
+
+        for label, handler, primary in (("Call", self.on_call, True),
+                                        ("Answer", lambda *_: self.ctl("accept"), False),
+                                        ("Hang up", self.on_hangup, False)):
+            b = Gtk.Button(label=label)
+            if primary:
+                b.get_style_context().add_class("suggested-action")
+            b.connect("clicked", handler)
+            box.pack_start(b, False, False, 0)
+
+        grid = Gtk.Grid(row_spacing=4, column_spacing=4,
+                        column_homogeneous=True, row_homogeneous=True)
+        for i, key in enumerate("123456789*0#"):
+            b = Gtk.Button(label=key)
+            b.connect("clicked", self.on_key, key)
+            grid.attach(b, i % 3, i // 3, 1, 1)
+        box.pack_start(grid, True, True, 0)
+
+        self.status = Gtk.Label(xalign=0)
+        box.pack_start(self.status, False, False, 0)
+
+        close = Gtk.Button(label="Close  (Esc)")
+        close.connect("clicked", lambda *_: self.destroy())
+        box.pack_start(close, False, False, 0)
+
+        self.entry.grab_focus()
+        self.connect("key-press-event", self.on_keypress)
+        self.connect("destroy", Gtk.main_quit)
+
+        self.saw_active = False
+        GLib.timeout_add(500, self.poll_state)
+
+        cached = cache.read(CACHE_NAME)
+        self.have_recent = bool(cached)       # plain flag: worker threads must not touch GTK models
+        if cached:
+            self.render_recent(cached)
+        else:
+            self.set_recent_message("Loading recent calls..." if self.backend
+                                    else "Recent calls: backend not configured")
+        if self.backend:
+            threading.Thread(target=self._load_recent, daemon=True).start()
+
+    # -- recent calls ------------------------------------------------------
+    def set_recent_message(self, text):
+        self.recent_store.clear()
+        self.recent_store.append(["<span foreground='#93a6c9'>%s</span>"
+                                  % GLib.markup_escape_text(text), "", ""])
+        return False
+
+    def render_recent(self, calls):
+        self.recent_store.clear()
+        if not calls:
+            return self.set_recent_message("No recent calls.")
+        for c in calls:
+            inbound = c.get("inbound")
+            missed = inbound and (c.get("voicemail") or
+                                  c.get("disposition") in ("NO ANSWER", "BUSY", "FAILED"))
+            if missed:
+                arrow, colour = "↙", "#ff8a8a"
+            elif inbound:
+                arrow, colour = "↙", "#7CFC00"
+            else:
+                arrow, colour = "↗", ui.ACCENT
+            detail = pretty_when(c.get("when", ""))
+            if c.get("voicemail"):
+                detail += " · vm"
+            elif pretty_duration(c.get("seconds")):
+                detail += " · " + pretty_duration(c.get("seconds"))
+            peer = c.get("peer", "")
+            number = pretty_number(peer)
+            named = contacts.label(peer) if contacts else ""
+            known = bool(contacts and contacts.lookup(peer))
+            esc = GLib.markup_escape_text
+            if known:
+                head = "%s  <span size='small' weight='normal'>%s</span>" % (esc(named), esc(number))
+            elif named:     # area code only: the number leads, region is a hint
+                head = "%s  <span size='small' weight='normal'>%s</span>" % (esc(number), esc(named))
+            else:
+                head = esc(number)
+            self.recent_store.append([
+                "<span foreground='%s'><b>%s %s</b></span>" % (colour, arrow, head),
+                "<span size='small' foreground='#93a6c9'>%s</span>" % esc(detail),
+                digits(peer)])
+        self.have_recent = True
+        return False
+
+    def _load_recent(self):
+        try:
+            calls = self.backend.calls_recent(self.recent_n)
+        except Exception as e:
+            cache.log_error("dial", "recent: %s" % e)
+            if not self.have_recent:
+                GLib.idle_add(self.set_recent_message, "Recent calls: %s" % e)
+            return
+        cache.write(CACHE_NAME, calls)
+        GLib.idle_add(self.render_recent, calls)
+
+    def on_recent_activated(self, view, path, col):
+        """Load the number; do NOT dial - one stray click must not place a call."""
+        number = self.recent_store[path][2]
+        if number:
+            self.entry.set_text(number)
+            self.entry.set_position(-1)
+            self.entry.grab_focus()
+            self.status.set_text("Ready to call %s" % pretty_number(number))
+
+    # -- call state --------------------------------------------------------
+    def poll_state(self):
+        """Mirror the live call; close shortly after a call this window saw
+        go active has ended."""
+        kind, num = baresip.read_state(config.STATE_FILE)
+        if kind in ("RINGING", "INCALL"):
+            self.saw_active = True
+            self.status.set_text("%s%s" % ("Ringing" if kind == "RINGING" else "In call",
+                                           " - " + num if num else ""))
+        elif self.saw_active:
+            self.status.set_text("Call ended.")
+            GLib.timeout_add_seconds(1, self.close_later)
+            return False
+        return True
+
+    def close_later(self):
+        self.destroy()
+        return False
+
+    def on_hangup(self, *_):
+        # Close here too: an outbound call that was never answered never
+        # reaches INCALL, so poll_state() would not close the window.
+        if self.ctl("hangup"):
+            self.status.set_text("Hung up.")
+            GLib.timeout_add(400, self.close_later)
+
+    def on_keypress(self, _w, ev):
+        if ui.is_close_key(ev):
+            self.destroy()
+            return True
+        return False
+
+    def on_key(self, _btn, key):
+        self.entry.set_text(self.entry.get_text() + key)
+        self.entry.set_position(-1)
+
+    def ctl(self, verb, arg=None):
+        try:
+            r = subprocess.run([CTL, verb] + ([arg] if arg else []),
+                               capture_output=True, text=True, timeout=8)
+            if r.returncode != 0:
+                self.status.set_text((r.stderr or "failed").strip()[:80])
+                return False
+            return True
+        except Exception as e:
+            self.status.set_text(str(e)[:80])
+            return False
+
+    def on_call(self, *_):
+        n = digits(self.entry.get_text())
+        if len(n) == 10:
+            n = "1" + n                  # NANP; international numbers pass through
+        if len(n) < 7:
+            self.status.set_text("Enter a full number.")
+            return
+        self.status.set_text("Calling %s..." % n)
+        self.ctl("dial", n)
+
+
+def main():
+    cfg = config.load()
+    ui.toggle_instance(NAME)
+    extra = [s.strip() for s in cfg.get("panel", "solo_family").split(",") if s.strip()]
+    ui.close_others(NAME, extra)
+    Dialer(cfg).show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

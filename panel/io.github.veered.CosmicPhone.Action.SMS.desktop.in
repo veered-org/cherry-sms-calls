@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=SMS
+Comment=Open / close the SMS window
+Type=Application
+Exec=@BINDIR@/cosmic-panel-launch @BINDIR@/cosmic-sms
+Terminal=false
+Categories=Utility;
+Icon=mail-message-new-symbolic
+NoDisplay=true

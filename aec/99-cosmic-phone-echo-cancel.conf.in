@@ -1,0 +1,74 @@
+# PipeWire echo cancellation for SIP calls.
+# Install to ~/.config/pipewire/pipewire.conf.d/99-cosmic-phone-echo-cancel.conf
+# (install.sh --with-aec does this), then restart PipeWire yourself.
+#
+# Creates a VIRTUAL pair backed by WebRTC's echo canceller:
+#     cosmic_aec_sink    <- baresip plays the far end here; also the AEC reference
+#     cosmic_aec_source  <- baresip captures here, with that reference subtracted
+# The sink forwards to the real speakers. AEC only works because baresip uses
+# BOTH ends: the canceller must know what was played to subtract it.
+#
+# System defaults are NOT changed; only baresip is pointed at these nodes.
+# To undo: delete this file and restart PipeWire.
+#
+# By default the canceller follows your DEFAULT mic and speakers. To pin
+# specific hardware, uncomment the target.object lines below and replace the
+# placeholders with node names from `pactl list short sources` / `sinks`, e.g.
+# alsa_input.usb-VENDOR_MODEL-00.mono-fallback
+context.modules = [
+    {   name = libpipewire-module-echo-cancel
+        args = {
+            library.name = aec/libspa-aec-webrtc
+
+            # MONO. WebRTC's canceller is a mono algorithm and a call is mono
+            # anyway; in stereo it tends to attenuate everything uniformly
+            # instead of cancelling. Set both the top-level key and audio.* on
+            # each node, or the nodes may still negotiate 2 channels.
+            channels = 1
+            audio.channels = 1
+            audio.position = [ MONO ]
+
+            aec.args = {
+                # With the AEC3 (webrtc-audio-processing 1.x) plugin,
+                # gain_control MUST stay false: it enables both WebRTC AGCs,
+                # which wreck delay estimation and can make residual echo
+                # LOUDER than the raw mic.
+                webrtc.gain_control          = false
+                webrtc.high_pass_filter      = true
+                webrtc.noise_suppression     = true
+                webrtc.transient_suppression = true
+                webrtc.voice_detection       = true
+            }
+
+            # The module stays loaded permanently: baresip names these nodes
+            # in its config, and cosmic-aec-guard falls back if they vanish.
+            # pause-on-idle lets the real mic suspend when no call is using it.
+            capture.props = {
+                node.name    = "effect_input.cosmic-aec"
+                node.passive = true
+                node.pause-on-idle = true
+                session.suspend-timeout-seconds = 5
+                #target.object = "@CAPTURE_DEVICE_NODE_NAME@"
+            }
+            source.props = {
+                node.name        = "cosmic_aec_source"
+                node.description = "Echo-Cancelled Mic (calls)"
+                node.pause-on-idle = true
+                session.suspend-timeout-seconds = 5
+                audio.channels   = 1
+                audio.position   = [ MONO ]
+            }
+            sink.props = {
+                node.name        = "cosmic_aec_sink"
+                node.description = "Echo-Cancelled Out (calls)"
+                audio.channels   = 1
+                audio.position   = [ MONO ]
+            }
+            playback.props = {
+                node.name    = "effect_output.cosmic-aec"
+                node.passive = true
+                #target.object = "@PLAYBACK_DEVICE_NODE_NAME@"
+            }
+        }
+    }
+]

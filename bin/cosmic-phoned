@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""cosmic-phoned - follow baresip's event stream and keep a one-line state file.
+
+    $XDG_RUNTIME_DIR/cosmic-phone.state:
+        IDLE
+        RINGING|<caller number>
+        INCALL|<peer number>
+
+Panel buttons, hotkeys and the dialer read that file, so none of them need to
+know anything about SIP. Runs as a systemd user unit bound to baresip.
+
+On state changes it also:
+  * notifies on an incoming call,
+  * releases a silenced ringer (cosmic-phone-silence restore),
+  * optionally ducks other audio during a call ([audio] duck_during_calls),
+  * optionally merges call-recording legs ([recording] dir).
+
+Self-healing: the event stream can miss a CALL_CLOSED (e.g. while a
+cosmic-phone-ctl command briefly holds baresip's single ctrl_tcp slot), so
+while the state is non-IDLE it periodically asks baresip `callstat` over the
+SAME connection, and forces IDLE if baresip has had no call for STUCK_AFTER s.
+"""
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+
+def _libpath():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.environ.get("COSMIC_PHONE_LIB"), os.path.join(here, "..", "lib"),
+              os.path.expanduser("~/.local/lib/cosmic-tools/phone")):
+        if p and os.path.isdir(os.path.join(p, "cosmic_phone")):
+            return p
+    return ""
+
+
+sys.path.insert(0, _libpath())
+
+from cosmic_phone import baresip, config  # noqa: E402
+
+CFG = config.load()
+HOST = CFG.get("baresip", "ctrl_host")
+PORT = CFG.getint("baresip", "ctrl_port")
+STATE = config.STATE_FILE
+DUCK_ENABLED = CFG.getboolean("audio", "duck_during_calls")
+RECORD_DIR = config.expand(CFG.get("recording", "dir").strip())
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+DUCK = os.path.join(HERE, "cosmic-audio-duck")
+SILENCE = os.path.join(HERE, "cosmic-phone-silence")
+MERGE = os.path.join(HERE, "cosmic-call-merge")
+
+TICK = 5            # seconds between reconcile checks while a call is believed up
+STUCK_AFTER = 10    # how long baresip must disagree before we overrule the state
+STATUS_TOKEN = "cosmic-phoned"
+
+last_kind = "IDLE"
+last_peer = ""
+
+
+def write_state(text):
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, STATE)       # atomic; readers never see a half-written file
+
+
+def hook(*cmd):
+    """Fire and forget - a slow or broken hook must never stall state tracking."""
+    if not os.path.exists(cmd[0]) and "/" in cmd[0]:
+        return
+    try:
+        subprocess.Popen(cmd, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def set_state(text):
+    global last_kind, last_peer
+    kind, _, num = text.partition("|")
+    prev, prev_peer = last_kind, last_peer
+    write_state(text)
+    last_kind = kind
+    if num:
+        last_peer = num
+    if kind == prev:
+        return
+    if prev == "RINGING" or kind in ("RINGING", "INCALL"):
+        # A silenced ringer must never outlive the call it was silenced for,
+        # or the next call rings silently and is missed with no symptom.
+        hook(SILENCE, "restore")
+    if kind == "RINGING":
+        hook("notify-send", "-a", "Phone", "-i", "call-start-symbolic",
+             "Incoming call: %s" % (num or "unknown"),
+             "Click the panel phone button to answer")
+    if kind == "INCALL" and DUCK_ENABLED:
+        hook(DUCK, "mute")
+    elif kind == "IDLE" and prev in ("INCALL", "RINGING"):
+        hook(DUCK, "restore")        # harmless no-op when nothing was ducked
+        if prev == "INCALL" and RECORD_DIR:
+            # Pass the peer explicitly: the state file already says IDLE.
+            hook(MERGE, prev_peer)
+
+
+def peer_of(ev):
+    p = ev.get("peeruri") or ev.get("peer") or ""
+    if "@" in p:
+        p = p.split("@", 1)[0]
+    return p.replace("sip:", "").lstrip("+")
+
+
+def force_idle():
+    """Drop to IDLE and undo side effects unconditionally (restores are no-ops
+    when nothing was changed)."""
+    global last_kind
+    write_state("IDLE")
+    last_kind = "IDLE"
+    hook(DUCK, "restore")
+    hook(SILENCE, "restore")
+
+
+def current_kind():
+    try:
+        with open(STATE) as fh:
+            return fh.read().strip().split("|", 1)[0] or "IDLE"
+    except Exception:
+        return "IDLE"
+
+
+def run():
+    write_state("IDLE")
+    hook(DUCK, "restore")
+    hook(SILENCE, "restore")
+    stuck_since = None           # outside the reconnect loop on purpose
+    while True:
+        try:
+            with socket.create_connection((HOST, PORT), timeout=5) as s:
+                s.settimeout(TICK)
+                for payload in baresip.read_netstrings(s):
+                    if payload is None:
+                        if current_kind() != "IDLE":
+                            try:
+                                s.sendall(baresip.command_bytes("callstat", "", STATUS_TOKEN))
+                            except OSError:
+                                pass
+                        else:
+                            stuck_since = None
+                        continue
+                    try:
+                        ev = json.loads(payload)
+                    except ValueError:
+                        continue
+                    if not ev.get("event"):
+                        if ev.get("token") == STATUS_TOKEN:
+                            no_call = "no active calls" in (ev.get("data") or "").lower()
+                            if current_kind() != "IDLE" and no_call:
+                                now = time.time()
+                                if stuck_since is None:
+                                    stuck_since = now
+                                elif now - stuck_since >= STUCK_AFTER:
+                                    print("reconcile: baresip has no call; forcing IDLE", flush=True)
+                                    force_idle()
+                                    stuck_since = None
+                            else:
+                                stuck_since = None
+                        continue
+                    kind = ev.get("type", "")
+                    if kind == "CALL_INCOMING":
+                        stuck_since = None
+                        set_state("RINGING|%s" % peer_of(ev))
+                    elif kind in ("CALL_ESTABLISHED", "CALL_ANSWERED"):
+                        stuck_since = None
+                        set_state("INCALL|%s" % peer_of(ev))
+                    elif kind in ("CALL_CLOSED", "CALL_TERMINATED"):
+                        stuck_since = None
+                        set_state("IDLE")
+        except OSError:
+            set_state("IDLE")        # baresip down or restarting
+            time.sleep(3)
+
+
+if __name__ == "__main__":
+    run()

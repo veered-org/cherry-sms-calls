@@ -1,0 +1,21 @@
+#!/bin/sh
+# cosmic-phone-alt - a secondary hotkey (e.g. Shift + the key bound to
+# cosmic-phone-click).
+#
+#   RINGING -> silence the ringer on this machine. The call is NOT rejected:
+#              it keeps ringing at the provider and goes to voicemail.
+#   INCALL  -> hang up.
+#   else    -> nothing, so a stray press is harmless.
+#
+# With no state file (cosmic-phoned not running) it does nothing rather than
+# guess - the harmful guess would be hanging up a live call.
+set -u
+bindir=$(dirname "$(readlink -f "$0")")
+STATE="${XDG_RUNTIME_DIR:-/tmp}/cosmic-phone.state"
+[ -r "$STATE" ] || exit 0
+
+case "$(cut -d'|' -f1 "$STATE")" in
+    RINGING) exec "$bindir/cosmic-phone-silence" ;;
+    INCALL)  exec "$bindir/cosmic-phone-ctl" hangup ;;
+    *)       exit 0 ;;
+esac

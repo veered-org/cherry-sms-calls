@@ -1,0 +1,13 @@
+#!/bin/sh
+# cosmic-panel-launch - run a GTK window from a COSMIC panel button.
+#
+# cosmic-panel starts panel-button actions with WAYLAND_DISPLAY pointing at the
+# panel's private socket. A GTK layer-shell client on that socket can crash the
+# panel, so reset the display variables to the real session compositor as
+# recorded in the systemd user environment before launching anything windowed.
+# If systemctl is unavailable the environment is left as is.
+for kv in $(systemctl --user show-environment 2>/dev/null \
+            | grep -E '^(WAYLAND_DISPLAY|DISPLAY)='); do
+    export "$kv"
+done
+exec "$@"

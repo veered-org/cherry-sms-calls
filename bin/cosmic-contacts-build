@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""cosmic-contacts-build - build the phone book the dialer and SMS window use.
+
+    cosmic-contacts-build [--vcf FILE]... [--csv FILE]... [--out FILE]
+
+With no arguments, reads the paths listed in phone.conf:
+
+    [contacts]
+    vcf  = ~/Contacts/export.vcf          (comma-separated list allowed)
+    csv  = ~/Contacts/extra.csv
+    book = ~/.local/share/cosmic-tools/phone/contacts.json
+
+vCards are applied first and CSV files after, so a CSV row overrides a vCard
+entry for the same number - use a small CSV for corrections. CSV format:
+name,number[,company] with an optional header row.
+
+The output contains names and numbers, so it is written with mode 600.
+"""
+import argparse
+import json
+import os
+import sys
+
+
+def _libpath():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.environ.get("COSMIC_PHONE_LIB"), os.path.join(here, "..", "lib"),
+              os.path.expanduser("~/.local/lib/cosmic-tools/phone")):
+        if p and os.path.isdir(os.path.join(p, "cosmic_phone")):
+            return p
+    return ""
+
+
+sys.path.insert(0, _libpath())
+
+from cosmic_phone import config, contacts  # noqa: E402
+
+
+def split_paths(s):
+    return [config.expand(p.strip()) for p in (s or "").split(",") if p.strip()]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--vcf", action="append", default=[])
+    ap.add_argument("--csv", action="append", default=[])
+    ap.add_argument("--out")
+    a = ap.parse_args(argv)
+
+    cfg = config.load()
+    vcfs = [config.expand(p) for p in a.vcf] or split_paths(cfg.get("contacts", "vcf"))
+    csvs = [config.expand(p) for p in a.csv] or split_paths(cfg.get("contacts", "csv"))
+    out = config.expand(a.out or cfg.get("contacts", "book"))
+
+    if not vcfs and not csvs:
+        sys.exit("no sources: pass --vcf/--csv or set [contacts] vcf/csv in %s" % config.CONF_PATH)
+
+    sources = []
+    for kind, paths in (("vcf", vcfs), ("csv", csvs)):
+        for p in paths:
+            try:
+                with open(p, encoding="utf-8-sig", errors="replace") as f:
+                    sources.append((kind, f.read()))
+                print("  read %s" % p)
+            except OSError as e:
+                print("  skipped %s (%s)" % (p, e), file=sys.stderr)
+
+    book = contacts.build(sources)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    tmp = out + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(book, f)
+    os.replace(tmp, out)
+    print("wrote %s (%d numbers)" % (out, len(book)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

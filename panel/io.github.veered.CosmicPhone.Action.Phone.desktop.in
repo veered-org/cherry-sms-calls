@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Phone
+Comment=Answer if ringing, hang up if in a call, otherwise open / close the dialer
+Type=Application
+Exec=@BINDIR@/cosmic-phone-click
+Terminal=false
+Categories=Utility;
+Icon=call-start-symbolic
+NoDisplay=true

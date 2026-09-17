@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""cosmic-phone - command-line access to the configured SMS/call backend.
+
+  cosmic-phone check                      validate config + secrets; with the
+                                          voipms backend, show the public IP
+                                          voip.ms sees (for the API allowlist)
+  cosmic-phone sms list [--days N]        print messages as JSON
+  cosmic-phone sms send --to N --text T   send one SMS
+  cosmic-phone calls recent [--limit N]   print recent calls as JSON
+"""
+import argparse
+import json
+import os
+import sys
+
+
+def _libpath():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.environ.get("COSMIC_PHONE_LIB"), os.path.join(here, "..", "lib"),
+              os.path.expanduser("~/.local/lib/cosmic-tools/phone")):
+        if p and os.path.isdir(os.path.join(p, "cosmic_phone")):
+            return p
+    return ""
+
+
+sys.path.insert(0, _libpath())
+
+from cosmic_phone import backend, config  # noqa: E402
+
+
+def check(cfg):
+    ok = True
+    print("config:  %s%s" % (config.CONF_PATH, "" if os.path.exists(config.CONF_PATH) else "  (MISSING - defaults in use)"))
+    kind = cfg.get("phone", "backend")
+    print("backend: %s" % kind)
+    if kind in ("voipms", "twilio", "signalwire"):
+        print("secrets: %s" % config.SECRETS_PATH)
+        msg = config.check_secrets_mode(config.SECRETS_PATH)
+        if msg:
+            print("  " + msg)
+            ok = False
+        if not config.dids(cfg):
+            print("  [phone] did is not set")
+            ok = False
+    try:
+        b = backend.get(cfg)
+        if isinstance(b, backend.VoipMsBackend):
+            print("voip.ms sees this machine as %s - that IP must be on the API allowlist" % b.whoami())
+        elif isinstance(b, backend.TwilioBackend):
+            print("%s account: %s" % (kind, b.whoami()))
+        elif isinstance(b, backend.KdeConnectBackend):
+            print("kdeconnect device: %s" % b.whoami())
+    except Exception as e:
+        print("  error: %s" % e)
+        ok = False
+    print("OK" if ok else "problems found")
+    return 0 if ok else 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="cosmic-phone", description="SMS / call history backend CLI")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("check")
+    sms = sub.add_parser("sms").add_subparsers(dest="sub", required=True)
+    sl = sms.add_parser("list")
+    sl.add_argument("--days", type=int)
+    ss = sms.add_parser("send")
+    ss.add_argument("--to", required=True)
+    ss.add_argument("--text", required=True)
+    calls = sub.add_parser("calls").add_subparsers(dest="sub", required=True)
+    cr = calls.add_parser("recent")
+    cr.add_argument("--limit", type=int)
+    a = ap.parse_args(argv)
+
+    cfg = config.load()
+    try:
+        if a.cmd == "check":
+            return check(cfg)
+        b = backend.get(cfg)
+        if a.cmd == "sms" and a.sub == "list":
+            out = b.sms_list(a.days or cfg.getint("phone", "sms_days"))
+        elif a.cmd == "sms" and a.sub == "send":
+            out = b.sms_send(a.to, a.text)
+        else:
+            out = b.calls_recent(a.limit or cfg.getint("phone", "recent_calls"))
+    except (backend.BackendError, config.ConfigError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 1
+    json.dump(out, sys.stdout, indent=1)
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

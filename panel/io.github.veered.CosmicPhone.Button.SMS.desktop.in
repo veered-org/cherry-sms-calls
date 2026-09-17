@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=SMS Button
+Comment=Panel button: one click runs io.github.veered.CosmicPhone.Action.SMS
+Type=Application
+Exec=cosmic-panel-button io.github.veered.CosmicPhone.Action.SMS
+Terminal=false
+Categories=COSMIC;
+Icon=mail-message-new-symbolic
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true

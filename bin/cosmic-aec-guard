@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""cosmic-aec-guard - keep the phone working whatever happens to the AEC plugin.
+
+Runs as ExecStartPre of cosmic-phone-baresip.service and decides which audio
+devices baresip starts with:
+
+  [aec] enabled = false           -> do nothing (default)
+  AEC sink + source nodes exist   -> point baresip at them (echo-cancelled)
+  nodes missing                   -> point baresip at pulse,default and notify
+
+Why: the AEC3 plugin is a local build (see aec/BUILD.md). A PipeWire update can
+change the SPA ABI so it no longer loads; the echo-cancel nodes then never
+appear, and a baresip config naming them statically would give calls NO
+AUDIO with no explanation. With the guard the worst case is echo coming back
+plus a notification.
+
+Escape hatch: touch ~/.config/cosmic-tools/phone.aec-off
+
+Editing the baresip config here is safe: baresip has not started yet, and only
+the audio_player / audio_source lines are touched. Always exits 0.
+"""
+import os
+import re
+import subprocess
+import sys
+import time
+
+
+def _libpath():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.environ.get("COSMIC_PHONE_LIB"), os.path.join(here, "..", "lib"),
+              os.path.expanduser("~/.local/lib/cosmic-tools/phone")):
+        if p and os.path.isdir(os.path.join(p, "cosmic_phone")):
+            return p
+    return ""
+
+
+sys.path.insert(0, _libpath())
+
+from cosmic_phone import config  # noqa: E402
+
+CFG = config.load()
+BARESIP_CONFIG = os.path.join(config.expand(CFG.get("baresip", "config_dir")), "config")
+AEC_OFF = os.path.join(config.CONFIG_DIR, "phone.aec-off")
+SINK = CFG.get("aec", "sink")
+SOURCE = CFG.get("aec", "source")
+WANT = {"audio_player": "pulse," + SINK, "audio_source": "pulse," + SOURCE}
+FALLBACK = {"audio_player": "pulse,default", "audio_source": "pulse,default"}
+
+
+def nodes_present():
+    for _ in range(10):          # the module can take a moment after PipeWire starts
+        try:
+            out = subprocess.run(["pactl", "list", "short", "sinks"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            out += subprocess.run(["pactl", "list", "short", "sources"],
+                                  capture_output=True, text=True, timeout=5).stdout
+            names = {line.split("\t")[1] for line in out.splitlines() if "\t" in line}
+            if SINK in names and SOURCE in names:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
+
+def rewrite(targets):
+    """Set the audio_ lines to `targets`. Returns True if the file changed."""
+    try:
+        with open(BARESIP_CONFIG) as f:
+            text = f.read()
+    except OSError:
+        return False
+    new = text
+    for key, val in targets.items():
+        new = re.sub(r"^(%s[ \t]+)\S+" % key, r"\g<1>%s" % val, new, count=1, flags=re.M)
+    if new == text:
+        return False
+    tmp = BARESIP_CONFIG + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(new)
+    os.replace(tmp, BARESIP_CONFIG)
+    return True
+
+
+def notify(summary, body):
+    try:
+        subprocess.Popen(["notify-send", "-a", "Phone", "-u", "critical",
+                          "-i", "dialog-warning-symbolic", summary, body],
+                         start_new_session=True)
+    except Exception:
+        pass
+
+
+def main():
+    if not CFG.getboolean("aec", "enabled"):
+        return 0
+    if os.path.exists(AEC_OFF):
+        rewrite(FALLBACK)
+        return 0
+    if nodes_present():
+        if rewrite(WANT):
+            notify("Phone: echo canceller restored", "Calls use the AEC nodes again.")
+        return 0
+    if rewrite(FALLBACK):
+        notify("Phone: echo canceller unavailable",
+               "%s / %s did not appear; calls fall back to the default devices "
+               "(echo may return). A PipeWire update may have broken the local "
+               "AEC plugin - rebuild it (see aec/BUILD.md)." % (SINK, SOURCE))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:           # never block baresip from starting
+        print("cosmic-aec-guard: %s" % e, file=sys.stderr)
+        sys.exit(0)

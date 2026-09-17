@@ -1,0 +1,21 @@
+[Unit]
+Description=baresip SIP softphone for the COSMIC phone tools
+# cosmic-dial / cosmic-phone-ctl / cosmic-phoned talk to this over ctrl_tcp
+# (127.0.0.1:4444 by default).
+After=pipewire.service pipewire-pulse.service network-online.target
+Wants=pipewire-pulse.service
+
+[Service]
+Type=simple
+# Pick the audio devices before baresip reads its config: the echo-cancelled
+# pair when [aec] enabled = true and its nodes exist, else pulse,default.
+# "-" prefix: a guard failure must never keep the phone from starting.
+ExecStartPre=-%h/.local/bin/cosmic-aec-guard
+# -f: config dir. No -d: systemd owns the process. stdio.so must NOT be loaded
+# in the baresip config under systemd (it dies on epoll_ctl fd=0).
+ExecStart=/usr/bin/baresip -f %h/.baresip
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

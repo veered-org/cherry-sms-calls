@@ -1,0 +1,14 @@
+# baresip accounts file -> copy to ~/.baresip/accounts and chmod 600.
+# One SIP account per line. Replace every UPPERCASE placeholder.
+#
+#   SUBACCOUNT  the voip.ms sub-account SIP username, e.g. 100000_desktop
+#               (portal: Main Menu > Sub Accounts > Create Sub Account)
+#   PASSWORD    that sub-account's SIP password (NOT your portal or API password)
+#   SERVER      the voip.ms POP you registered the DID/sub-account to, e.g.
+#               newyork1.voip.ms (portal: Main Menu > Account Settings > Default POP)
+#
+# answermode=manual: incoming calls ring until you answer (panel button,
+# cosmic-dial's Answer button, or `cosmic-phone-ctl accept`).
+# audio_codecs: opus needs `module opus.so` enabled in ~/.baresip/config.
+#
+<sip:SUBACCOUNT@SERVER;transport=tcp>;auth_pass=PASSWORD;outbound="sip:SERVER;transport=tcp";regint=300;answermode=manual;audio_codecs=opus/48000/2,PCMU,PCMA

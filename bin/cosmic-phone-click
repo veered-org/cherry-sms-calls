@@ -1,0 +1,27 @@
+#!/bin/sh
+# cosmic-phone-click - the one action behind the panel phone button (and a
+# hotkey, if you bind one). Bind both to this script so they never drift apart.
+#
+#   RINGING -> answer, and make sure the dialer is showing
+#   INCALL  -> hang up (the dialer closes itself when the call ends)
+#   else    -> toggle the dialer
+bindir=$(dirname "$(readlink -f "$0")")
+rt="${XDG_RUNTIME_DIR:-/tmp}"
+state=$(cat "$rt/cosmic-phone.state" 2>/dev/null || echo IDLE)
+
+case "${state%%|*}" in
+    RINGING)
+        "$bindir/cosmic-phone-ctl" accept >/dev/null 2>&1
+        pid=$(cat "$rt/cosmic-dial.pid" 2>/dev/null)
+        if [ -n "$pid" ] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q cosmic-dial; then
+            exit 0
+        fi
+        exec "$bindir/cosmic-panel-launch" "$bindir/cosmic-dial"
+        ;;
+    INCALL)
+        exec "$bindir/cosmic-phone-ctl" hangup
+        ;;
+    *)
+        exec "$bindir/cosmic-panel-launch" "$bindir/cosmic-dial"
+        ;;
+esac

@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""cosmic-phone-silence - silence the ringer for an incoming call.
+
+    cosmic-phone-silence            mute baresip's streams while RINGING
+    cosmic-phone-silence restore    unmute them again
+
+The call is not rejected: it keeps ringing at the provider and rolls to
+voicemail, and the caller notices nothing. Only acts while the phone is
+RINGING. cosmic-phoned runs `restore` on every call transition.
+
+Why restore sweeps by identity every time: the ring stream usually dies the
+moment a call is answered, so a saved index matches nothing - while PipeWire
+has already PERSISTED "baresip -> muted" per application name, so the next
+call's audio stream would be born muted (you hear nothing, the caller hears
+you). Unmuting any baresip stream present at restore time rewrites that rule.
+That is safe because this tool only ever mutes baresip streams.
+"""
+import json
+import os
+import subprocess
+import sys
+
+RT = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+STATE = os.path.join(RT, "cosmic-phone-silence.json")
+PHONE_STATE = os.path.join(RT, "cosmic-phone.state")
+RING = ("baresip",)
+NAME_KEYS = ("application.name", "node.name", "media.name")
+
+
+def run(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(cmd, 127, "", "")
+
+
+def sink_inputs():
+    out = run("pactl", "list", "sink-inputs").stdout
+    items, idx, names, muted = [], None, [], False
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("Sink Input #"):
+            if idx is not None:
+                items.append((idx, " ".join(names), muted))
+            idx, names, muted = s.split("#", 1)[1].strip(), [], False
+        elif s.startswith("Mute:"):
+            muted = s.split(":", 1)[1].strip() == "yes"
+        elif "=" in s and s.split("=", 1)[0].strip() in NAME_KEYS:
+            names.append(s.split("=", 1)[1].strip().strip('"'))
+    if idx is not None:
+        items.append((idx, " ".join(names), muted))
+    return items
+
+
+def phone_kind():
+    try:
+        with open(PHONE_STATE) as f:
+            return f.read().strip().split("|", 1)[0] or "IDLE"
+    except Exception:
+        return "IDLE"
+
+
+def silence():
+    if phone_kind() != "RINGING" or os.path.exists(STATE):
+        return
+    muting = [i for i, ident, m in sink_inputs()
+              if not m and any(r in (ident or "").lower() for r in RING)]
+    with open(STATE, "w") as f:
+        json.dump({"muted": muting}, f)
+    for idx in muting:
+        run("pactl", "set-sink-input-mute", idx, "1")
+    try:
+        subprocess.Popen(["notify-send", "-a", "Phone", "-i", "audio-volume-muted-symbolic",
+                          "Ringer silenced - the call will go to voicemail"],
+                         start_new_session=True)
+    except Exception:
+        pass
+
+
+def restore():
+    try:
+        with open(STATE) as f:
+            saved = json.load(f)
+    except Exception:
+        saved = {}
+    for idx in saved.get("muted", []):
+        run("pactl", "set-sink-input-mute", idx, "0")
+    for idx, ident, muted in sink_inputs():
+        if muted and any(r in (ident or "").lower() for r in RING):
+            run("pactl", "set-sink-input-mute", idx, "0")
+    try:
+        os.unlink(STATE)
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "restore":
+        restore()
+    else:
+        silence()

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Phone Button
+Comment=Panel button: one click runs io.github.veered.CosmicPhone.Action.Phone
+Type=Application
+Exec=cosmic-panel-button io.github.veered.CosmicPhone.Action.Phone
+Terminal=false
+Categories=COSMIC;
+Icon=call-start-symbolic
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true

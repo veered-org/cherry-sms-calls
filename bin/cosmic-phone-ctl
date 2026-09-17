@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""cosmic-phone-ctl - send one command to the running baresip and print the reply.
+
+  cosmic-phone-ctl dial <number>
+  cosmic-phone-ctl accept        (alias: answer)
+  cosmic-phone-ctl hangup
+  cosmic-phone-ctl status
+
+Talks to baresip's ctrl_tcp module ([baresip] ctrl_host/ctrl_port in phone.conf).
+"""
+import os
+import sys
+
+
+def _libpath():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.environ.get("COSMIC_PHONE_LIB"), os.path.join(here, "..", "lib"),
+              os.path.expanduser("~/.local/lib/cosmic-tools/phone")):
+        if p and os.path.isdir(os.path.join(p, "cosmic_phone")):
+            return p
+    return ""
+
+
+sys.path.insert(0, _libpath())
+
+from cosmic_phone import baresip, config  # noqa: E402
+
+MAPPING = {"dial": "dial", "accept": "accept", "answer": "accept",
+           "hangup": "hangup", "status": "callstat"}
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in MAPPING:
+        sys.exit(__doc__)
+    cfg = config.load()
+    host, port = cfg.get("baresip", "ctrl_host"), cfg.getint("baresip", "ctrl_port")
+    arg = sys.argv[2] if len(sys.argv) > 2 else ""
+    if sys.argv[1] == "dial":
+        arg = "".join(c for c in arg if c.isdigit() or c in "*#+")
+        if not arg:
+            sys.exit("dial: no number")
+    try:
+        print(baresip.send(host, port, MAPPING[sys.argv[1]], arg))
+    except OSError as e:
+        sys.exit("baresip not reachable on %s:%s (%s)" % (host, port, e))
+
+
+if __name__ == "__main__":
+    main()
