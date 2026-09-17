@@ -44,8 +44,6 @@ phone's own plan. It uses KDE's `kdeconnect-cli` (`sudo apt install kdeconnect`)
 COSMIC KDE Connect applet does not include a command-line client. Replies arrive on the
 phone as usual.
 
-> Screenshots: _TODO (dialer strip, SMS strip, panel buttons)_
-
 ## Please test before relying on it
 
 This is shared as-is, with no warranty. It works on my own computers, but your system,
