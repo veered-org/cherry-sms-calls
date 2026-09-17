@@ -52,7 +52,7 @@ If something doesn't work, you can ask Claude (or another AI coding assistant) t
 into it, and I'd appreciate hearing what you found and how you fixed it. You are also
 welcome to just let me know at support@veered.org, and I'll look into it.
 
-## How it fits together
+## Information for nerds: how it fits together
 
 ```
 panel button / hotkey ── cosmic-phone-click ──┐
