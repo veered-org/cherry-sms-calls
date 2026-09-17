@@ -1,4 +1,4 @@
-# Cherry: SMS and VOIP phone calls from your Linux desktop, with any SIP provider
+# Linux SMS and VOIP Phone App (Cherry)
 
 *Why Cherry? The classic cherry-red telephone.*
 
