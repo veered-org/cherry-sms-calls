@@ -4,6 +4,8 @@
 
 **Runs on:** Wayland desktops that support layer-shell windows: COSMIC, KDE Plasma, Sway, Hyprland and others (not GNOME). The one-click panel button is for COSMIC.
 
+**Version 1.0.**
+
 Part of [Veered](https://veered.org): free tools, shared as-is. Questions: support@veered.org
 
 Small tools that turn a phone number into a desktop phone on COSMIC (Pop!_OS 24.04
