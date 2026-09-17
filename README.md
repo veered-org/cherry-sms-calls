@@ -46,6 +46,14 @@ phone as usual.
 
 > Screenshots: _TODO (dialer strip, SMS strip, panel buttons)_
 
+## Please test before relying on it
+
+This is shared as-is, with no warranty. It works on my own computers, but your system,
+settings and software versions may differ, so please try it in a safe setting first.
+If something doesn't work, you can ask Claude (or another AI coding assistant) to look
+into it, and I'd appreciate hearing what you found and how you fixed it. You are also
+welcome to just let me know at support@veered.org, and I'll look into it.
+
 ## How it fits together
 
 ```
