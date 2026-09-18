@@ -2,36 +2,31 @@
 
 *Why Cherry? The classic cherry-red telephone.*
 
-**Runs on:** Wayland desktops that support layer-shell windows: COSMIC, KDE Plasma, Sway, Hyprland and others (not GNOME). The one-click panel button is for COSMIC.
+**Runs on** Wayland desktops, especially COSMIC and KDE.
 
 **Version 1.0.**
 
 Part of [Veered](https://veered.org): free tools, shared as-is. Questions: support@veered.org
 
-Small tools that turn a phone number into a desktop phone on COSMIC (Pop!_OS 24.04
-and similar). Calls work with any SIP provider; texts and call history work with
-several providers (below).
+Your phone number, on your computer. Texts arrive in a narrow window at the edge of
+the screen, calls ring on the desktop, and one button on the panel answers them.
 
-* **cosmic-sms**: a narrow window on the right edge for sending and reading texts on
-  your DID.
-* **cosmic-dial**: a keypad with the last few calls, Call / Answer / Hang up buttons,
-  and names from your own contacts.
-* **cosmic-phoned**: follows [baresip](https://github.com/baresip/baresip)'s event
-  stream and writes a one-line call state (`IDLE`, `RINGING|number`, `INCALL|number`)
-  that panel buttons and hotkeys read.
-* **Panel buttons**: one click answers a ringing call, hangs up a live one, or opens the
-  dialer.
-* **Optional echo cancellation**: a build recipe for PipeWire's WebRTC AEC3 plugin, for
-  open speakers plus a desk mic.
+* **Texting**: a window down the right-hand edge, the conversation in it, and a box to
+  type your reply.
+* **Calling**: a keypad with your recent calls, and Call / Answer / Hang up. Numbers you
+  have in your own contacts show up by name.
+* **One button on the panel**: it answers a ringing call, hangs up a call in progress,
+  or opens the keypad when nothing is happening.
+* **Clear sound on speakers**, with the echo cancelling that open speakers and a desk
+  mic need.
 
 ### Which providers work
 
-**Calls** go through [baresip](https://github.com/baresip/baresip), a standard SIP
-client, so any SIP provider works: voip.ms, Twilio or SignalWire SIP, Telnyx,
-Callcentric, Flowroute, a company PBX, and others. Put the provider's SIP login in
-`~/.baresip/accounts`.
+**Calls work with any phone provider that speaks SIP** — the standard nearly all of
+them speak — including voip.ms, Twilio, SignalWire, Telnyx, Callcentric, Flowroute, or
+your company's own phone system. You put your provider's login in a settings file.
 
-**Texts and call history** use a pluggable backend, set with `backend =` in `phone.conf`:
+**Texts and call history** need a provider this knows how to talk to:
 
 | Backend | Send texts | Read texts | Call history | Needs |
 |---|---|---|---|---|
@@ -66,7 +61,7 @@ cosmic-dial (window) ───────────────────�
 cosmic-sms / cosmic-dial history ── cosmic_phone.backend ──► voip.ms REST API (HTTPS)
 ```
 
-## Requirements
+## Information for nerds: requirements, setup and settings
 
 ```sh
 sudo apt install baresip python3 python3-gi gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 \
@@ -78,7 +73,7 @@ sudo apt install playerctl ffmpeg     # audio ducking / merging call recordings
 `gir1.2-gtklayershell-0.1` is what anchors the windows to the screen edge. Without it
 they still work, but the compositor chooses where they appear.
 
-## Setup
+### Setup
 
 ### 1. Install
 
@@ -208,7 +203,7 @@ Settings > Keyboard > Custom shortcuts, use the bare program path without argume
 See [aec/BUILD.md](aec/BUILD.md). In short: `aec/build-aec.sh`, then
 `./install.sh --with-aec`, then restart PipeWire yourself.
 
-## Config reference (`~/.config/cosmic-tools/phone.conf`)
+### Config reference (`~/.config/cosmic-tools/phone.conf`)
 
 | Section / key | Default | Meaning |
 |---|---|---|
@@ -256,7 +251,7 @@ The program is called as `sms-list --days N`, `sms-send --to NUMBER --text TEXT`
 working stub in `examples/command-backend.sh`). One use is keeping API credentials off
 the desktop: `command = ssh -o BatchMode=yes myserver ./phone-api.py`.
 
-## Programs
+### Programs
 
 | Program | What it does |
 |---|---|
@@ -274,7 +269,7 @@ the desktop: `command = ssh -o BatchMode=yes myserver ./phone-api.py`.
 | `cosmic-call-merge` | Optional: merge recording legs into one stereo file |
 | `cosmic-panel-launch` | Start a GTK window safely from a panel button |
 
-## Things worth knowing
+### Things worth knowing
 
 * **baresip's ctrl_tcp serves one client at a time.** A new connection silently drops
   the old one, so every `cosmic-phone-ctl` command briefly knocks `cosmic-phoned` off
@@ -296,7 +291,7 @@ the desktop: `command = ssh -o BatchMode=yes myserver ./phone-api.py`.
   silenced ring could make the next call's audio start muted. `cosmic-phone-silence
   restore` runs on every call transition and unmutes baresip streams by identity.
 
-## Security notes
+### Security notes
 
 * `phone.secrets` holds your API password in plain text. Keep it `chmod 600`; the
   tools warn when it is readable by others. Consider a voip.ms API IP allowlist as
@@ -312,7 +307,7 @@ the desktop: `command = ssh -o BatchMode=yes myserver ./phone-api.py`.
   created `600`. The contacts book is created `600`.
 * Call recording is off by default and legally regulated in many places.
 
-## Tests
+### Tests
 
 ```sh
 tests/run-tests.sh
@@ -326,7 +321,7 @@ permission checks, netstring framing, and vCard/CSV contact import from fake dat
 
 MIT (see the top-level `LICENSE`).
 
-## Conventions
+## Information for nerds: conventions
 
 - The installer is per-user: it writes to `~/.local/bin`, `~/.local/share/cosmic-tools`
   and `~/.config/cosmic-tools`, never to system directories, and needs no `sudo`.
