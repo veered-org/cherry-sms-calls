@@ -20,6 +20,8 @@ the screen, calls ring on the desktop, and one button on the panel answers them.
 * **Clear sound on speakers**, with the echo cancelling that open speakers and a desk
   mic need.
 
+![The texting window and the dialer, with sample data](docs/screenshot.jpg)
+
 ### Which providers work
 
 **Calls work with any phone provider that speaks SIP** — the standard nearly all of
